@@ -49,14 +49,29 @@ jobs:
       - name: Build image
         run: docker build -t app:test .
       
-      - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@master
+      - name: Install Trivy
+        uses: aquasecurity/setup-trivy@v0.3.1
         with:
-          image-ref: 'app:test'
-          format: 'table'
-          exit-code: '1'
-          ignore-unfixed: true
-          severity: 'CRITICAL,HIGH'
+          version: v0.76.2
+
+      - name: Run Trivy vulnerability scanner
+        run: |
+          scan_status=0
+          trivy image --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed \
+            --exit-code 10 --no-progress app:test > trivy-report.txt 2>&1 || scan_status=$?
+          cat trivy-report.txt
+          {
+            echo '### Image vulnerability scan'
+            echo '```text'
+            cat trivy-report.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$scan_status" -eq 10 ]; then
+            echo "::error::Trivy found fixable high or critical vulnerabilities. See the workflow summary."
+          elif [ "$scan_status" -ne 0 ]; then
+            echo "::error::Trivy could not complete the image scan. See the workflow summary."
+          fi
+          exit "$scan_status"
   
   deploy:
     needs: security
