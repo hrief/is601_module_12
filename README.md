@@ -40,12 +40,12 @@ The calculation type is set at creation. Edits replace the operands and recalcul
 
 ## Run integration tests
 
-Start PostgreSQL with `docker compose up -d db`. Use Python 3.10 and point `DATABASE_URL` to the dedicated test database. The test fixtures drop and recreate application tables in that database.
+Start PostgreSQL with `docker compose up -d db`. Use Python 3.13 and point `DATABASE_URL` to the dedicated test database. The test fixtures drop and recreate application tables in that database.
 
 macOS or Linux:
 
 ```sh
-python3.10 -m venv venv
+python3.13 -m venv venv
 source venv/bin/activate
 python -m pip install -r requirements.txt
 export DATABASE_URL=postgresql://postgres:postgres@localhost:5432/fastapi_test_db
@@ -55,7 +55,7 @@ python -m pytest tests/integration/
 Windows PowerShell:
 
 ```powershell
-py -3.10 -m venv venv
+py -3.13 -m venv venv
 .\venv\Scripts\python.exe -m pip install -r requirements.txt
 $env:DATABASE_URL = "postgresql://postgres:postgres@localhost:5432/fastapi_test_db"
 .\venv\Scripts\python.exe -m pytest tests/integration/

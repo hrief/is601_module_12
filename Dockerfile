@@ -1,4 +1,4 @@
-FROM python:3.10-slim
+FROM python:3.13-slim
 
 # Set environment variables for Python
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -6,10 +6,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# Install system dependencies
+# Apply available system updates
 RUN apt-get update && \
     apt-get upgrade -y && \
-    apt-get install -y --no-install-recommends gcc python3-dev libssl-dev curl && \
     rm -rf /var/lib/apt/lists/*
 
 # Upgrade pip and essential Python tools
@@ -34,7 +33,7 @@ USER appuser
 
 # Health check for the service
 HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8000/health || exit 1
+    CMD ["python", "-c", "from urllib.request import urlopen; urlopen('http://localhost:8000/health', timeout=5).close()"]
 
 # Run database initialization before starting the app
 CMD python -m app.database_init && \
