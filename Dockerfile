@@ -11,16 +11,14 @@ RUN apt-get update && \
     apt-get upgrade -y && \
     rm -rf /var/lib/apt/lists/*
 
-# Upgrade pip and essential Python tools
-RUN python -m pip install --upgrade pip 'setuptools>=70.0.0' wheel
-
 # Create non-root user
 RUN groupadd -r appgroup && \
     useradd -r -g appgroup appuser
 
-# Copy dependencies and install them
+# Install application dependencies and remove the build-time installer.
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN python -m pip install --no-cache-dir -r requirements.txt && \
+    python -m pip uninstall --yes pip
 
 # Copy application code
 COPY . .
