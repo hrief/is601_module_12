@@ -1,238 +1,200 @@
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
+from math import isfinite
 from uuid import UUID
-from typing import List
-from fastapi import Body, FastAPI, Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+
+from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from fastapi.security import OAuth2PasswordRequestForm
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.auth.dependencies import get_current_active_user
+from app.database import Base, engine, get_db
 from app.models.calculation import Calculation
 from app.models.user import User
-from app.schemas.calculation import CalculationBase, CalculationResponse, CalculationUpdate
+from app.schemas.calculation import CalculationBase, CalculationCreate, CalculationRead, CalculationUpdate
 from app.schemas.token import TokenResponse
-from app.schemas.user import UserCreate, UserResponse, UserLogin
-from app.database import Base, get_db, engine
+from app.schemas.user import UserCreate, UserLogin, UserResponse
 
-# Create tables on startup
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("Creating tables...")
     Base.metadata.create_all(bind=engine)
-    print("Tables created successfully!")
     yield
+
 
 app = FastAPI(
     title="Calculations API",
     description="API for managing calculations",
     version="1.0.0",
-    lifespan=lifespan
+    lifespan=lifespan,
 )
 
-# ------------------------------------------------------------------------------
-# Health Endpoint
-# ------------------------------------------------------------------------------
+
+@app.exception_handler(RequestValidationError)
+async def validation_error(_request: Request, exc: RequestValidationError):
+    errors = [
+        {field: error[field] for field in ("loc", "msg", "type")}
+        for error in exc.errors()
+    ]
+    return JSONResponse(status_code=422, content={"detail": errors})
+
+
 @app.get("/health", tags=["health"])
 def read_health():
     return {"status": "ok"}
 
-# ------------------------------------------------------------------------------
-# User Registration Endpoint
-# ------------------------------------------------------------------------------
-@app.post(
-    "/auth/register", 
-    response_model=UserResponse, 
-    status_code=status.HTTP_201_CREATED,
-    tags=["auth"]
-)
+
+@app.post("/auth/register", response_model=UserResponse, status_code=201, tags=["auth"])
+@app.post("/users/register", response_model=UserResponse, status_code=201, tags=["users"])
 def register(user_create: UserCreate, db: Session = Depends(get_db)):
-    # Exclude confirm_password before passing data to User.register
-    user_data = user_create.dict(exclude={"confirm_password"})
+    user_data = user_create.model_dump(exclude={"confirm_password"})
     try:
         user = User.register(db, user_data)
         db.commit()
-        db.refresh(user)
-        return user
-    except ValueError as e:
+    except ValueError as exc:
         db.rollback()
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except IntegrityError as exc:
+        db.rollback()
+        if getattr(exc.orig, "pgcode", None) != "23505":
+            raise
+        raise HTTPException(status_code=400, detail="Username or email already exists") from exc
+    db.refresh(user)
+    return user
 
-# ------------------------------------------------------------------------------
-# User Login Endpoints
-# ------------------------------------------------------------------------------
-@app.post("/auth/login", response_model=TokenResponse, tags=["auth"])
-def login_json(user_login: UserLogin, db: Session = Depends(get_db)):
-    """Login with JSON payload"""
-    auth_result = User.authenticate(db, user_login.username, user_login.password)
+
+def authenticate(db: Session, username: str, password: str) -> dict:
+    auth_result = User.authenticate(db, username, password)
     if auth_result is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid username or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    db.commit()
+    return auth_result
 
+
+@app.post("/auth/login", response_model=TokenResponse, tags=["auth"])
+@app.post("/users/login", response_model=TokenResponse, tags=["users"])
+def login_json(user_login: UserLogin, db: Session = Depends(get_db)):
+    auth_result = authenticate(db, user_login.username, user_login.password)
     user = auth_result["user"]
-    db.commit()  # Commit the last_login update
-
-    # Ensure expires_at is timezone-aware
-    expires_at = auth_result.get("expires_at")
-    if expires_at and expires_at.tzinfo is None:
-        expires_at = expires_at.replace(tzinfo=timezone.utc)
-    else:
-        expires_at = datetime.now(timezone.utc) + timedelta(minutes=15)
-
     return TokenResponse(
         access_token=auth_result["access_token"],
         refresh_token=auth_result["refresh_token"],
         token_type="bearer",
-        expires_at=expires_at,
+        expires_at=auth_result["expires_at"],
         user_id=user.id,
         username=user.username,
         email=user.email,
         first_name=user.first_name,
         last_name=user.last_name,
         is_active=user.is_active,
-        is_verified=user.is_verified
+        is_verified=user.is_verified,
     )
+
 
 @app.post("/auth/token", tags=["auth"])
 def login_form(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
-    """Login with form data for Swagger UI"""
-    auth_result = User.authenticate(db, form_data.username, form_data.password)
-    if auth_result is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid username or password",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+    """Issue an access token for Swagger UI's Authorize dialog."""
+    auth_result = authenticate(db, form_data.username, form_data.password)
+    return {"access_token": auth_result["access_token"], "token_type": "bearer"}
 
-    return {
-        "access_token": auth_result["access_token"],
-        "token_type": "bearer"
-    }
 
-# ------------------------------------------------------------------------------
-# Calculations Endpoints (BREAD)
-# ------------------------------------------------------------------------------
-# Create (Add) Calculation – using CalculationBase so that 'user_id' from the client is ignored.
-@app.post(
-    "/calculations",
-    response_model=CalculationResponse,
-    status_code=status.HTTP_201_CREATED,
-    tags=["calculations"],
-)
-def create_calculation(
-    calculation_data: CalculationBase,
-    current_user = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
-):
-    """
-    Compute and persist a calculation.
-    
-    The endpoint reads the calculation type and inputs from the request (ignoring any extra fields),
-    computes the result using the appropriate operation, and assigns the authenticated user's ID.
-    """
-    try:
-        # Create the calculation using the factory method.
-        new_calculation = Calculation.create(
-            calculation_type=calculation_data.type,
-            user_id=current_user.id,
-            inputs=calculation_data.inputs,
-        )
-        new_calculation.result = new_calculation.get_result()
+def calculate_result(calculation: Calculation) -> float:
+    result = calculation.get_result()
+    if not isfinite(result):
+        raise ValueError("Calculation result must be finite.")
+    return result
 
-        # Persist the calculation to the database.
-        db.add(new_calculation)
-        db.commit()
-        db.refresh(new_calculation)
-        return new_calculation
 
-    except ValueError as e:
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
-        )
-
-# Browse / List Calculations (for the current user)
-@app.get("/calculations", response_model=List[CalculationResponse], tags=["calculations"])
-def list_calculations(
-    current_user = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
-):
-    calculations = db.query(Calculation).filter(Calculation.user_id == current_user.id).all()
-    return calculations
-
-# Read / Retrieve a Specific Calculation by ID
-@app.get("/calculations/{calc_id}", response_model=CalculationResponse, tags=["calculations"])
-def get_calculation(
-    calc_id: str,
-    current_user = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
-):
+def get_owned_calculation(calc_id: str, user_id: UUID, db: Session) -> Calculation:
     try:
         calc_uuid = UUID(calc_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid calculation id format.")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid calculation id format.") from exc
     calculation = db.query(Calculation).filter(
         Calculation.id == calc_uuid,
-        Calculation.user_id == current_user.id
+        Calculation.user_id == user_id,
     ).first()
-    if not calculation:
+    if calculation is None:
         raise HTTPException(status_code=404, detail="Calculation not found.")
     return calculation
 
-# Edit / Update a Calculation
-@app.put("/calculations/{calc_id}", response_model=CalculationResponse, tags=["calculations"])
+
+@app.post("/calculations", response_model=CalculationRead, status_code=201, tags=["calculations"])
+def create_calculation(
+    calculation_data: CalculationBase,
+    current_user: UserResponse = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    """Compute a result and assign ownership from the access token."""
+    owned_data = CalculationCreate(**calculation_data.model_dump(), user_id=current_user.id)
+    calculation = Calculation.create(owned_data.type, owned_data.user_id, owned_data.inputs)
+    try:
+        calculation.result = calculate_result(calculation)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    db.add(calculation)
+    db.commit()
+    db.refresh(calculation)
+    return calculation
+
+
+@app.get("/calculations", response_model=list[CalculationRead], tags=["calculations"])
+def list_calculations(
+    current_user: UserResponse = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    return db.query(Calculation).filter(Calculation.user_id == current_user.id).all()
+
+
+@app.get("/calculations/{calc_id}", response_model=CalculationRead, tags=["calculations"])
+def get_calculation(
+    calc_id: str,
+    current_user: UserResponse = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    return get_owned_calculation(calc_id, current_user.id, db)
+
+
+@app.put("/calculations/{calc_id}", response_model=CalculationRead, tags=["calculations"])
 def update_calculation(
     calc_id: str,
     calculation_update: CalculationUpdate,
-    current_user = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
+    current_user: UserResponse = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
 ):
-    try:
-        calc_uuid = UUID(calc_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid calculation id format.")
-    calculation = db.query(Calculation).filter(
-        Calculation.id == calc_uuid,
-        Calculation.user_id == current_user.id
-    ).first()
-    if not calculation:
-        raise HTTPException(status_code=404, detail="Calculation not found.")
-
+    calculation = get_owned_calculation(calc_id, current_user.id, db)
     if calculation_update.inputs is not None:
         calculation.inputs = calculation_update.inputs
-        calculation.result = calculation.get_result()
+        try:
+            calculation.result = calculate_result(calculation)
+        except ValueError as exc:
+            db.rollback()
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
     calculation.updated_at = datetime.utcnow()
     db.commit()
     db.refresh(calculation)
     return calculation
 
-# Delete a Calculation
-@app.delete("/calculations/{calc_id}", status_code=status.HTTP_204_NO_CONTENT, tags=["calculations"])
+
+@app.delete("/calculations/{calc_id}", status_code=204, tags=["calculations"])
 def delete_calculation(
     calc_id: str,
-    current_user = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
+    current_user: UserResponse = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
 ):
-    try:
-        calc_uuid = UUID(calc_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid calculation id format.")
-    calculation = db.query(Calculation).filter(
-        Calculation.id == calc_uuid,
-        Calculation.user_id == current_user.id
-    ).first()
-    if not calculation:
-        raise HTTPException(status_code=404, detail="Calculation not found.")
+    calculation = get_owned_calculation(calc_id, current_user.id, db)
     db.delete(calculation)
     db.commit()
-    return None
 
-# ------------------------------------------------------------------------------
-# Main Block to Run the Server
-# ------------------------------------------------------------------------------
+
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run("app.main:app", host="127.0.0.1", port=8001, log_level="info")

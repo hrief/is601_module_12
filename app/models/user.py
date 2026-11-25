@@ -156,7 +156,7 @@ class User(Base):
             or_(cls.username == username_or_email, cls.email == username_or_email)
         ).first()
 
-        if not user or not user.verify_password(password):
+        if not user or not user.is_active or not user.verify_password(password):
             return None
 
         # Update the last_login timestamp
@@ -222,7 +222,7 @@ class User(Base):
         try:
             payload = jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.ALGORITHM])
             sub = payload.get("sub")
-            if sub is None:
+            if sub is None or payload.get("type") != "access":
                 return None
             try:
                 return uuid.UUID(sub)

@@ -13,6 +13,7 @@ from .calculation import (
     CalculationType,
     CalculationBase,
     CalculationCreate,
+    CalculationRead,
     CalculationUpdate,
     CalculationResponse
 )
@@ -30,6 +31,7 @@ __all__ = [
     'CalculationType',
     'CalculationBase',
     'CalculationCreate',
+    'CalculationRead',
     'CalculationUpdate',
     'CalculationResponse',
 ]

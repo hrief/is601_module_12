@@ -1,5 +1,5 @@
 from enum import Enum
-from pydantic import BaseModel, Field, ConfigDict, model_validator, field_validator
+from pydantic import BaseModel, Field, ConfigDict, FiniteFloat, model_validator, field_validator
 from typing import List, Optional
 from uuid import UUID
 from datetime import datetime
@@ -17,7 +17,7 @@ class CalculationBase(BaseModel):
         description="Type of calculation (addition, subtraction, multiplication, division)",
         example="addition"
     )
-    inputs: List[float] = Field(
+    inputs: List[FiniteFloat] = Field(
         ...,
         description="List of numeric inputs for the calculation",
         example=[10.5, 3, 2],
@@ -81,7 +81,7 @@ class CalculationCreate(CalculationBase):
 
 class CalculationUpdate(BaseModel):
     """Schema for updating an existing Calculation"""
-    inputs: Optional[List[float]] = Field(
+    inputs: Optional[List[FiniteFloat]] = Field(
         None,
         description="Updated list of numeric inputs for the calculation",
         example=[42, 7],
@@ -100,7 +100,7 @@ class CalculationUpdate(BaseModel):
         json_schema_extra={"example": {"inputs": [42, 7]}}
     )
 
-class CalculationResponse(CalculationBase):
+class CalculationRead(CalculationBase):
     """Schema for reading a Calculation from the database"""
     id: UUID = Field(
         ...,
@@ -134,3 +134,6 @@ class CalculationResponse(CalculationBase):
             }
         }
     )
+
+
+CalculationResponse = CalculationRead
