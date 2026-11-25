@@ -58,7 +58,13 @@ jobs:
         run: |
           scan_status=0
           trivy image --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed \
-            --exit-code 10 --no-progress app:test > trivy-report.txt 2>&1 || scan_status=$?
+            --exit-code 10 --no-progress --format json --output trivy-results.json \
+            app:test > trivy-report.txt 2>&1 || scan_status=$?
+          if [ -s trivy-results.json ]; then
+            jq -r '.Results[]? | .Vulnerabilities[]? |
+              "\(.Severity) \(.VulnerabilityID) \(.PkgName) \(.InstalledVersion) → \(.FixedVersion)"' \
+              trivy-results.json >> trivy-report.txt
+          fi
           cat trivy-report.txt
           {
             echo '### Image vulnerability scan'
@@ -67,7 +73,9 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           if [ "$scan_status" -eq 10 ]; then
-            echo "::error::Trivy found fixable high or critical vulnerabilities. See the workflow summary."
+            jq -r '.Results[]? | .Vulnerabilities[]? |
+              "::error::\(.VulnerabilityID) \(.PkgName) \(.InstalledVersion) can be updated to \(.FixedVersion)"' \
+              trivy-results.json
           elif [ "$scan_status" -ne 0 ]; then
             echo "::error::Trivy could not complete the image scan. See the workflow summary."
           fi
