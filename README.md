@@ -3,7 +3,7 @@
 FastAPI and PostgreSQL backend with user registration, JWT login, and calculation history scoped to each user.
 
 - [GitHub repository](https://github.com/hrief/is601_module_12)
-- [Docker Hub repository](https://hub.docker.com/r/hrief/is601_module_12), assuming `DOCKERHUB_USERNAME` is `hrief`
+- [Docker Hub repository](https://hub.docker.com/repository/docker/holden988/is601_module_12/general)
 
 ## Run locally
 
